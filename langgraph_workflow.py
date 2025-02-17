@@ -10,6 +10,8 @@ from vector_db_interface import VectorDBInterface
 from models import ResearchPlan, DocumentChunk, QualityMetricsReport, AnalysisResult
 from utils import logger, time_it
 import json
+import argparse
+import yaml
 
 # -----------------------------------------------------------------------------------------
 # Research Planning Node
@@ -465,11 +467,17 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
 # -----------------------------------------------------------------------------------------
 
 @time_it
-def run_research_agent(topic: str):
+def run_research_agent(topic: str, model_name: str = None):
     """Main function to run the research agent workflow."""
     logger.info(f"Starting Research Agent for topic: '{topic}'")
 
     config = load_config()
+    
+    # Override model name if provided
+    if model_name:
+        config.llm.model_name = model_name
+        logger.info(f"Using override model: {model_name}")
+
     llm_interface = LLMInterface(config)
     llm_interface.initialize_llm()
     db_interface = VectorDBInterface(config)
@@ -517,5 +525,12 @@ def run_research_agent(topic: str):
         logger.error(f"Error running LangGraph workflow: {e}")
 
 if __name__ == "__main__":
-    research_topic_test = "Agentic AI Systems in Accounting"
-    run_research_agent(research_topic_test)
+    # Add command line argument parsing
+    parser = argparse.ArgumentParser(description='Run Research Agent with configurable LLM model')
+    parser.add_argument('--topic', type=str, default="Agentic AI Systems in Accounting",
+                       help='Research topic to analyze')
+    parser.add_argument('--model', type=str, 
+                       help='LLM model name (e.g., llama3.2:latest, mistral:latest, deepseek-r1:14b)')
+    
+    args = parser.parse_args()
+    run_research_agent(args.topic, args.model)
