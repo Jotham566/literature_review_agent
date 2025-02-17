@@ -199,3 +199,9 @@ __pypackages__/
 .cache/
 tmp/
 temp/
+
+# Chroma DB Files
+chroma/
+chroma/**/*
+*.sqlite3
+*.bin
