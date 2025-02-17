@@ -204,4 +204,5 @@ temp/
 chroma/
 chroma/**/*
 *.sqlite3
-*.bin
+*.binarxiv_papers/
+chroma/
