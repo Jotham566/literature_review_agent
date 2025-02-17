@@ -1,0 +1,11 @@
+arxiv
+PyYAML
+pydantic
+chromadb
+tqdm
+numpy
+psutil
+pypdf
+langgraph
+langchain-ollama
+langchain

@@ -1,0 +1,57 @@
+#config.yaml
+llm:
+  model_name: "llama3.2:latest"
+  fallback_model_name: "mistral:latest"
+  params:
+    temperature: 0.7
+    top_p: 0.9
+
+vector_db:
+  db_type: "chroma"
+  persist_directory: "research_chroma_db"
+  chunk_size: 4000
+  chunk_overlap: 400
+  batch_size: 50
+  retry_delay: 1
+  max_retries: 3
+
+processing:
+  paper_batch_size: 1
+  max_workers: 2
+  max_papers: 15
+  force_gc: true
+  max_memory_percent: 70.0
+
+logging:
+  level: "INFO"
+  file_path: "logs/document_processor.log"
+  console_output: true
+  detailed_memory_tracking: true
+  log_rotation:
+    max_size_mb: 10
+    backup_count: 5
+
+source_criteria:
+  peer_reviewed: 2.0
+  citation_count: 1.5
+  publication_date: 1.0
+  journal_impact: 1.5
+  author_h_index: 1.0
+
+quality_thresholds:
+  min_sources: 15
+  min_citation_density: 0.8
+  min_verification_score: 0.9
+  max_uncertainty_level: 0.2
+  min_source_credibility_score: 2.5
+
+citation_template:
+  fields:
+    - authors
+    - title
+    - journal
+    - year
+    - doi
+    - url
+    - accessed_date
+    - verification_status
