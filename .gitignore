@@ -169,3 +169,33 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Project Specific directories
+research_chroma_db/
+arxiv_papers/
+chroma/
+logs/
+__pypackages__/
+.pdm-build/
+.pdm-python/
+
+# DB Files
+*.db
+*.sqlite
+*.sqlite3
+*.bin
+
+# Log Files
+*.log
+
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cache and temporary files
+.cache/
+tmp/
+temp/
