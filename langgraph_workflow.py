@@ -264,6 +264,147 @@ def analysis_node(state: Dict, db_interface: VectorDBInterface, llm_interface: L
     return state
 
 # -----------------------------------------------------------------------------------------
+# Draft Generation Node
+# -----------------------------------------------------------------------------------------
+
+def count_words(text: str) -> int:
+    """Count words in text, handling special characters and whitespace."""
+    return len(text.split())
+
+def draft_generation_node(llm_interface: LLMInterface) -> callable:
+    """Creates a node for generating literature review draft sections."""
+    def draft_generation(state: Dict) -> Dict:
+        """Node for generating literature review draft sections."""
+        research_plan = state["research_plan"]
+        analysis_result = state.get("analysis_result")
+        
+        if not analysis_result:
+            logger.warning("No analysis results available for draft generation.")
+            state["draft_content"] = "Insufficient analysis results for draft generation."
+            return state
+
+        logger.info(f"Starting Draft Generation for topic: {research_plan.topic}")
+
+        # Construct the draft generation prompt
+        prompt = f"""
+        You are an expert academic writer. Generate a literature review section for the topic: '{research_plan.topic}'.
+        Use the following analysis results to create a well-structured, academic draft:
+
+        Key Themes: {analysis_result.key_themes}
+        Common Methodologies: {analysis_result.common_methodologies}
+        Comparative Findings: {analysis_result.comparative_findings}
+        Research Gaps: {analysis_result.research_gaps}
+
+        Generate a draft in markdown format with the following structure:
+        1. Overview of the Field
+        2. Key Themes and Findings
+        3. Methodological Approaches
+        4. Comparative Analysis
+        5. Research Gaps and Future Directions
+
+        IMPORTANT: Format your response as a valid JSON object with this exact structure:
+        {{
+            "sections": {{
+                "overview": "text here",
+                "themes": "text here",
+                "methods": "text here",
+                "comparison": "text here",
+                "gaps": "text here"
+            }},
+            "metadata": {{
+                "word_count": 0,
+                "section_count": 5
+            }}
+        }}
+        """
+
+        try:
+            response_json_str = llm_interface.generate_text(prompt)
+            logger.debug(f"LLM Draft Response (Raw):\n{response_json_str}")
+
+            # Extract and parse JSON
+            def extract_json(text):
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start != -1 and end != -1:
+                    return text[start:end]
+                return text
+
+            cleaned_json_str = extract_json(response_json_str)
+            try:
+                draft_json = json.loads(cleaned_json_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON Parse Error in draft generation: {e}")
+                draft_json = {
+                    "sections": {
+                        "overview": f"Literature Review: {research_plan.topic}",
+                        "themes": "Key themes analysis pending.",
+                        "methods": "Methodological analysis pending.",
+                        "comparison": "Comparative analysis pending.",
+                        "gaps": "Research gaps analysis pending."
+                    },
+                    "metadata": {
+                        "word_count": 0,
+                        "section_count": 5
+                    }
+                }
+
+            # Count words in each section
+            total_words = sum(count_words(section) 
+                            for section in draft_json['sections'].values())
+            
+            # Update metadata with actual word count
+            draft_json['metadata']['word_count'] = total_words
+
+            # Format the draft in markdown
+            draft_content = f"""# Literature Review: {research_plan.topic}
+
+## Overview of the Field
+{draft_json['sections']['overview']}
+
+## Key Themes and Findings
+{draft_json['sections']['themes']}
+
+## Methodological Approaches
+{draft_json['sections']['methods']}
+
+## Comparative Analysis
+{draft_json['sections']['comparison']}
+
+## Research Gaps and Future Directions
+{draft_json['sections']['gaps']}
+"""
+            state["draft_content"] = draft_content
+            state["draft_metadata"] = {
+                "word_count": total_words,
+                "section_count": len(draft_json['sections'])
+            }
+            
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=f"Draft generated successfully with "
+                         f"{total_words} words across "
+                         f"{len(draft_json['sections'])} sections")
+            ]
+            
+            logger.info(f"Draft generation completed successfully. Word count: {total_words}")
+
+        except Exception as e:
+            logger.error(f"Error in draft generation: {e}")
+            state["draft_content"] = f"""# Literature Review: {research_plan.topic}
+
+Draft generation encountered technical difficulties. Please retry the process.
+Key themes identified: {', '.join(analysis_result.key_themes)}
+"""
+            state["draft_metadata"] = {"word_count": 0, "section_count": 0}
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=f"Error in draft generation: {str(e)}")
+            ]
+
+        return state
+
+    return draft_generation
+
+# -----------------------------------------------------------------------------------------
 # Workflow Creation
 # -----------------------------------------------------------------------------------------
 
@@ -284,6 +425,8 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
             "document_chunks": [],
             "quality_report": QualityMetricsReport(),
             "analysis_result": None,
+            "draft_content": None,
+            "draft_metadata": {},
             "messages": [],
             "processed_documents": []
         }
@@ -298,12 +441,14 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
     builder.add_node("research_planning", research_planning_node(llm_interface))
     builder.add_node("data_collection", data_collection_node(config, db_interface, document_processor))
     builder.add_node("analysis", lambda x: analysis_node(x, db_interface, llm_interface))
+    builder.add_node("draft_generation", draft_generation_node(llm_interface))
 
     # Add edges with validation
     builder.add_edge("state_validation", "research_planning")
     builder.add_edge("research_planning", "data_collection")
     builder.add_edge("data_collection", "analysis")
-    builder.add_edge("analysis", END)
+    builder.add_edge("analysis", "draft_generation")
+    builder.add_edge("draft_generation", END)
 
     builder.set_entry_point("state_validation")
 
@@ -357,10 +502,16 @@ def run_research_agent(topic: str):
             logger.info(f"Common Methodologies: {results['analysis_result'].common_methodologies}")
             logger.info(f"Comparative Findings: {results['analysis_result'].comparative_findings}")
             logger.info(f"Research Gaps: {results['analysis_result'].research_gaps}")
-        else:
-            logger.warning("Analysis results not found in final state.")
 
-        logger.info(f"Total Document Chunks in VectorDB after Data Collection: {db_interface.get_collection_size()}")
+        if results.get("draft_content"):
+            logger.info("\n--- Generated Draft ---")
+            print(results["draft_content"])
+            if results.get("draft_metadata"):
+                logger.info(f"Draft Statistics: {results['draft_metadata']}")
+        else:
+            logger.warning("Draft content not found in final state.")
+
+        logger.info(f"Total Document Chunks in VectorDB: {db_interface.get_collection_size()}")
 
     except Exception as e:
         logger.error(f"Error running LangGraph workflow: {e}")

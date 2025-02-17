@@ -65,3 +65,21 @@ class AnalysisResult(BaseModel):
     common_methodologies: str = "No methodologies identified."
     comparative_findings: str = "No comparative findings."
     research_gaps: List[str] = Field(default_factory=list)
+
+class DraftSection(BaseModel):
+    overview: str = ""
+    themes: str = ""
+    methods: str = ""
+    comparison: str = ""
+    gaps: str = ""
+
+class DraftMetadata(BaseModel):
+    word_count: int = 0
+    section_count: int = 5
+    last_updated: Optional[str] = None
+    version: int = 1
+
+class DraftContent(BaseModel):
+    draft_sections: DraftSection = Field(default_factory=DraftSection)
+    metadata: DraftMetadata = Field(default_factory=DraftMetadata)
+    formatted_content: str = ""  # The final markdown formatted content
