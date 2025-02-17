@@ -7,11 +7,12 @@ from llm_interface import LLMInterface
 from arxiv_scraper import ArxivScraper
 from document_processor import MemoryEfficientDocumentProcessor
 from vector_db_interface import VectorDBInterface
-from models import ResearchPlan, DocumentChunk, QualityMetricsReport, AnalysisResult
+from models import ResearchPlan, DocumentChunk, QualityMetricsReport, AnalysisResult, DraftContent, DraftSection, DraftMetadata
 from utils import logger, time_it
 import json
 import argparse
 import yaml
+from datetime import datetime
 
 # -----------------------------------------------------------------------------------------
 # Research Planning Node
@@ -282,7 +283,9 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
         
         if not analysis_result:
             logger.warning("No analysis results available for draft generation.")
-            state["draft_content"] = "Insufficient analysis results for draft generation."
+            state["draft_content"] = DraftContent(
+                formatted_content="Insufficient analysis results for draft generation."
+            )
             return state
 
         logger.info(f"Starting Draft Generation for topic: {research_plan.topic}")
@@ -351,53 +354,92 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
                     }
                 }
 
+            # Create DraftSection object
+            draft_section = DraftSection(
+                overview=draft_json['sections']['overview'],
+                themes=draft_json['sections']['themes'],
+                methods=draft_json['sections']['methods'],
+                comparison=draft_json['sections']['comparison'],
+                gaps=draft_json['sections']['gaps']
+            )
+
             # Count words in each section
             total_words = sum(count_words(section) 
                             for section in draft_json['sections'].values())
-            
-            # Update metadata with actual word count
-            draft_json['metadata']['word_count'] = total_words
+
+            # Create DraftMetadata object
+            draft_metadata = DraftMetadata(
+                word_count=total_words,
+                section_count=len(draft_json['sections']),
+                last_updated=datetime.now().isoformat(),
+                version=1
+            )
 
             # Format the draft in markdown
-            draft_content = f"""# Literature Review: {research_plan.topic}
+            formatted_content = f"""# Literature Review: {research_plan.topic}
 
 ## Overview of the Field
-{draft_json['sections']['overview']}
+{draft_section.overview}
 
 ## Key Themes and Findings
-{draft_json['sections']['themes']}
+{draft_section.themes}
 
 ## Methodological Approaches
-{draft_json['sections']['methods']}
+{draft_section.methods}
 
 ## Comparative Analysis
-{draft_json['sections']['comparison']}
+{draft_section.comparison}
 
 ## Research Gaps and Future Directions
-{draft_json['sections']['gaps']}
+{draft_section.gaps}
 """
+            # Create DraftContent object
+            draft_content = DraftContent(
+                draft_sections=draft_section,
+                metadata=draft_metadata,
+                formatted_content=formatted_content
+            )
+
+            # Store single DraftContent object in state
             state["draft_content"] = draft_content
-            state["draft_metadata"] = {
-                "word_count": total_words,
-                "section_count": len(draft_json['sections'])
-            }
             
             state["messages"] = state.get("messages", []) + [
                 AIMessage(content=f"Draft generated successfully with "
-                         f"{total_words} words across "
-                         f"{len(draft_json['sections'])} sections")
+                         f"{draft_metadata.word_count} words across "
+                         f"{draft_metadata.section_count} sections")
             ]
             
             logger.info(f"Draft generation completed successfully. Word count: {total_words}")
 
         except Exception as e:
             logger.error(f"Error in draft generation: {e}")
-            state["draft_content"] = f"""# Literature Review: {research_plan.topic}
+            # Create fallback DraftContent object
+            fallback_content = f"""# Literature Review: {research_plan.topic}
 
 Draft generation encountered technical difficulties. Please retry the process.
 Key themes identified: {', '.join(analysis_result.key_themes)}
 """
-            state["draft_metadata"] = {"word_count": 0, "section_count": 0}
+            fallback_section = DraftSection(
+                overview="Draft generation failed",
+                themes=f"Identified themes: {', '.join(analysis_result.key_themes)}",
+                methods="Generation error",
+                comparison="Generation error",
+                gaps="Generation error"
+            )
+            
+            fallback_metadata = DraftMetadata(
+                word_count=len(fallback_content.split()),
+                section_count=0,
+                last_updated=datetime.now().isoformat(),
+                version=0
+            )
+
+            state["draft_content"] = DraftContent(
+                draft_sections=fallback_section,
+                metadata=fallback_metadata,
+                formatted_content=fallback_content
+            )
+
             state["messages"] = state.get("messages", []) + [
                 AIMessage(content=f"Error in draft generation: {str(e)}")
             ]
@@ -513,13 +555,13 @@ def run_research_agent(topic: str, model_name: str = None):
 
         if results.get("draft_content"):
             logger.info("\n--- Generated Draft ---")
-            print(results["draft_content"])
-            if results.get("draft_metadata"):
-                logger.info(f"Draft Statistics: {results['draft_metadata']}")
+            print(results["draft_content"].formatted_content)
+            logger.info(f"Draft Statistics: Word Count: {results['draft_content'].metadata.word_count}")
         else:
             logger.warning("Draft content not found in final state.")
 
         logger.info(f"Total Document Chunks in VectorDB: {db_interface.get_collection_size()}")
+        logger.info(f"Total Words in Generated Draft: {results.get('draft_content').metadata.word_count if results.get('draft_content') else 0}")
 
     except Exception as e:
         logger.error(f"Error running LangGraph workflow: {e}")
