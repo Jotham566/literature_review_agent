@@ -9,3 +9,4 @@ pypdf
 langgraph
 langchain-ollama
 langchain
+sentence_transformers
