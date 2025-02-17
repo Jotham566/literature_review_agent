@@ -8,7 +8,7 @@ from arxiv_scraper import ArxivScraper
 from document_processor import MemoryEfficientDocumentProcessor
 from vector_db_interface import VectorDBInterface
 from models import ResearchPlan, DocumentChunk, QualityMetricsReport, AnalysisResult, DraftContent, DraftSection, DraftMetadata
-from utils import logger, time_it
+from utils import logger, time_it, extract_json, WorkflowState, safe_get
 import json
 import argparse
 import yaml
@@ -19,9 +19,13 @@ from datetime import datetime
 # -----------------------------------------------------------------------------------------
 
 def research_planning_node(llm_interface: LLMInterface):
-    def research_planning(state: Dict) -> Dict:
+    def research_planning(state: WorkflowState) -> WorkflowState:
         """Node for research planning."""
-        research_plan = state["research_plan"]
+        research_plan = safe_get(state, "research_plan")
+        if not research_plan:
+            logger.error("No research plan found in state")
+            return state
+            
         topic = research_plan.topic
         logger.info(f"Starting Research Planning for topic: {topic}")
 
@@ -44,15 +48,6 @@ def research_planning_node(llm_interface: LLMInterface):
             logger.debug(f"LLM Response (Raw):\n{response_json_str}")
 
             # Clean up the response to extract just the JSON part
-            def extract_json(text):
-                # Find the first '{' and last '}'
-                start = text.find('{')
-                end = text.rfind('}')
-                if start != -1 and end != -1:
-                    return text[start:end + 1]
-                return text
-
-            # Clean and parse JSON
             cleaned_json_str = extract_json(response_json_str)
             try:
                 response_json = json.loads(cleaned_json_str)
@@ -203,14 +198,6 @@ def analysis_node(state: Dict, db_interface: VectorDBInterface, llm_interface: L
         logger.debug(f"LLM Analysis Response (Raw):\n{analysis_json_str}")
 
         # Extract JSON from response
-        def extract_json(text):
-            start = text.find('{')
-            end = text.rfind('}')
-            if start != -1 and end != -1:
-                return text[start:end + 1]
-            return text
-
-        # Clean and parse JSON
         cleaned_json_str = extract_json(analysis_json_str)
         try:
             analysis_json = json.loads(cleaned_json_str)
@@ -276,10 +263,10 @@ def count_words(text: str) -> int:
 
 def draft_generation_node(llm_interface: LLMInterface) -> callable:
     """Creates a node for generating literature review draft sections."""
-    def draft_generation(state: Dict) -> Dict:
+    def draft_generation(state: WorkflowState) -> WorkflowState:
         """Node for generating literature review draft sections."""
-        research_plan = state["research_plan"]
-        analysis_result = state.get("analysis_result")
+        research_plan = safe_get(state, "research_plan")
+        analysis_result = safe_get(state, "analysis_result")
         
         if not analysis_result:
             logger.warning("No analysis results available for draft generation.")
@@ -328,13 +315,6 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
             logger.debug(f"LLM Draft Response (Raw):\n{response_json_str}")
 
             # Extract and parse JSON
-            def extract_json(text):
-                start = text.find('{')
-                end = text.rfind('}') + 1
-                if start != -1 and end != -1:
-                    return text[start:end]
-                return text
-
             cleaned_json_str = extract_json(response_json_str)
             try:
                 draft_json = json.loads(cleaned_json_str)
