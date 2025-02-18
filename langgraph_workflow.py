@@ -30,14 +30,23 @@ def research_planning_node(llm_interface: LLMInterface):
         logger.info(f"Starting Research Planning for topic: {topic}")
 
         prompt = f"""
-        You are an expert research strategist. Your goal is to create a research plan for the topic: '{topic}'.
+        As an expert research strategist, create a comprehensive research plan for: '{topic}'
         
-        Generate a research plan with the following components:
-        1. Define Research Scope: Briefly outline the key aspects and boundaries of this literature review.
-        2. Identify Key Search Terms: Generate 5-7 highly relevant search terms for academic databases.
-
-        IMPORTANT: Respond with ONLY a valid JSON object in this exact format, with no additional text or formatting:
-        {{"research_scope": "scope text here", "search_terms": ["term1", "term2", "term3"]}}
+        Provide a structured research plan with:
+        1. Research Scope: Define clear boundaries and key aspects to investigate
+        2. Search Terms: Generate 8-10 search terms, including:
+           - Core topic terms
+           - Related methodologies
+           - Key theoretical frameworks
+           - Relevant applications
+        3. Exclusion Criteria: Specify what should be excluded from the review
+        
+        IMPORTANT: Respond with ONLY a valid JSON object in this format:
+        {{
+            "research_scope": "detailed scope description",
+            "search_terms": ["term1", "term2", "term3"],
+            "exclusion_criteria": ["criterion1", "criterion2"]
+        }}
         """
 
         try:
@@ -56,11 +65,13 @@ def research_planning_node(llm_interface: LLMInterface):
                 # Provide default values if parsing fails
                 response_json = {
                     "research_scope": f"Default scope for {topic}",
-                    "search_terms": [topic.lower()]
+                    "search_terms": [topic.lower()],
+                    "exclusion_criteria": []
                 }
 
             research_scope = response_json.get("research_scope", "No scope defined.")
             search_terms = response_json.get("search_terms", [])
+            exclusion_criteria = response_json.get("exclusion_criteria", [])
 
             if not search_terms:  # Ensure we have at least one search term
                 search_terms = [topic.lower()]
@@ -69,7 +80,8 @@ def research_planning_node(llm_interface: LLMInterface):
             state["research_plan"] = ResearchPlan(
                 topic=topic,
                 search_terms=search_terms,
-                timeline="To be defined"
+                timeline="To be defined",
+                exclusion_criteria=exclusion_criteria
             )
             
             # Add planning result to messages
@@ -85,7 +97,8 @@ def research_planning_node(llm_interface: LLMInterface):
             state["research_plan"] = ResearchPlan(
                 topic=topic,
                 search_terms=[topic.lower()],
-                timeline="To be defined"
+                timeline="To be defined",
+                exclusion_criteria=[]
             )
             state["messages"] = state.get("messages", []) + [
                 AIMessage(content=f"Error in research planning: {str(e)}. Using default search terms.")
@@ -146,9 +159,7 @@ def data_collection_node(config: Config, db_interface: VectorDBInterface,
 # -----------------------------------------------------------------------------------------
 
 def analysis_node(state: Dict, db_interface: VectorDBInterface, llm_interface: LLMInterface) -> Dict:
-    """
-    Node for analysis of collected documents.
-    """
+    """Node for analysis of collected documents."""
     research_plan = state["research_plan"]
     topic = research_plan.topic
     search_terms = research_plan.search_terms
@@ -179,17 +190,37 @@ def analysis_node(state: Dict, db_interface: VectorDBInterface, llm_interface: L
                                  for c in relevant_chunks])
 
     analysis_prompt = f"""
-    You are an expert research analyst. Analyze these document excerpts about: '{topic}'.
-
+    As an expert research analyst, perform a detailed analysis of these document excerpts about '{topic}'.
+    
+    Focus on:
+    1. Identify emerging patterns and relationships between key concepts
+    2. Evaluate the strength and quality of evidence
+    3. Compare and contrast different methodological approaches
+    4. Highlight significant agreements and contradictions
+    5. Identify gaps and opportunities for future research
+    
     Document Excerpts:
     {chunk_contents}
-
-    IMPORTANT: Respond ONLY with a valid JSON object in exactly this format, with no additional text:
+    
+    IMPORTANT: Respond ONLY with a valid JSON object in this format:
     {{
-        "key_themes": ["theme1", "theme2", "theme3"],
-        "common_methodologies": "Description of methodologies found",
-        "comparative_findings": "Summary of agreements and disagreements",
-        "research_gaps": ["gap1", "gap2"]
+        "key_themes": [
+            {{"theme": "theme name", "evidence_strength": "high", "description": "description text"}},
+            {{"theme": "another theme", "evidence_strength": "medium", "description": "description text"}}
+        ],
+        "methodologies": [
+            {{"method": "method name", "frequency": "common", "effectiveness": "effectiveness description"}},
+            {{"method": "another method", "frequency": "rare", "effectiveness": "effectiveness description"}}
+        ],
+        "comparative_analysis": {{
+            "agreements": ["agreement point 1", "agreement point 2"],
+            "contradictions": ["contradiction point 1", "contradiction point 2"],
+            "dependencies": ["dependency 1", "dependency 2"]
+        }},
+        "research_gaps": [
+            {{"gap": "gap description", "importance": "high", "rationale": "explanation text"}},
+            {{"gap": "another gap", "importance": "medium", "rationale": "explanation text"}}
+        ]
     }}
     """
 
@@ -203,42 +234,61 @@ def analysis_node(state: Dict, db_interface: VectorDBInterface, llm_interface: L
             analysis_json = json.loads(cleaned_json_str)
         except json.JSONDecodeError as e:
             logger.error(f"JSON Parse Error in analysis: {e}. Raw response: '{analysis_json_str}'")
-            # Provide structured default values based on chunks
+            # Provide structured default values
             analysis_json = {
-                "key_themes": [topic] + [term for term in search_terms[:2]],
-                "common_methodologies": "Analysis of methodologies pending structured review.",
-                "comparative_findings": "Further comparative analysis needed.",
+                "key_themes": [
+                    {"theme": topic, "evidence_strength": "medium", "description": "Primary research topic"},
+                    {"theme": search_terms[0] if search_terms else "", "evidence_strength": "low", "description": "Related concept"}
+                ],
+                "methodologies": [
+                    {"method": "Literature Review", "frequency": "common", "effectiveness": "Standard approach"}
+                ],
+                "comparative_analysis": {
+                    "agreements": ["Further research needed"],
+                    "contradictions": ["Varying approaches exist"],
+                    "dependencies": ["Context-dependent findings"]
+                },
                 "research_gaps": [
-                    f"Systematic review needed for {topic}",
-                    "Integration of multiple research perspectives required"
+                    {"gap": f"Comprehensive analysis of {topic}", "importance": "high", "rationale": "Need for systematic review"}
                 ]
             }
 
-        # Ensure all required fields exist with valid data
-        key_themes = analysis_json.get("key_themes", [])
+        # Extract and format the analysis results
+        key_themes = [item["theme"] for item in analysis_json.get("key_themes", [])]
         if not key_themes:
             key_themes = [topic]
 
-        common_methodologies = analysis_json.get("common_methodologies", "")
-        if not common_methodologies.strip():
-            common_methodologies = "Methodology analysis pending further review."
+        methodologies = [
+            f"{item['method']} ({item['frequency']}, {item['effectiveness']})"
+            for item in analysis_json.get("methodologies", [])
+        ]
+        if not methodologies:
+            methodologies = ["Methodology analysis pending further review."]
 
-        comparative_findings = analysis_json.get("comparative_findings", "")
-        if not comparative_findings.strip():
-            comparative_findings = "Comparative analysis pending additional data."
+        comparative = analysis_json.get("comparative_analysis", {})
+        comparative_findings = (
+            f"Agreements: {', '.join(comparative.get('agreements', []))}\n"
+            f"Contradictions: {', '.join(comparative.get('contradictions', []))}\n"
+            f"Context Dependencies: {', '.join(comparative.get('dependencies', []))}"
+        )
 
-        research_gaps = analysis_json.get("research_gaps", [])
+        research_gaps = [
+            f"{item['gap']} (Importance: {item['importance']})"
+            for item in analysis_json.get("research_gaps", [])
+        ]
         if not research_gaps:
             research_gaps = [f"Further research needed on {topic}"]
 
-        analysis_result_obj = AnalysisResult(
+        # Create AnalysisResult object
+        analysis_result = AnalysisResult(
             key_themes=key_themes,
-            common_methodologies=common_methodologies,
+            common_methodologies="\n".join(methodologies),
             comparative_findings=comparative_findings,
             research_gaps=research_gaps
         )
-        state["analysis_result"] = analysis_result_obj
-        logger.info(f"Analysis Completed. Key Themes: {key_themes}, Research Gaps: {research_gaps}")
+        
+        state["analysis_result"] = analysis_result
+        logger.info(f"Analysis Completed. Key Themes: {key_themes}")
 
     except Exception as e:
         logger.error(f"Error in analysis_node: {e}")
@@ -279,33 +329,55 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
 
         # Construct the draft generation prompt
         prompt = f"""
-        You are an expert academic writer. Generate a literature review section for the topic: '{research_plan.topic}'.
-        Use the following analysis results to create a well-structured, academic draft:
-
+        As an expert academic writer, create a comprehensive literature review for: '{research_plan.topic}'
+        
+        Use this analysis:
         Key Themes: {analysis_result.key_themes}
-        Common Methodologies: {analysis_result.common_methodologies}
-        Comparative Findings: {analysis_result.comparative_findings}
-        Research Gaps: {analysis_result.research_gaps}
-
-        Generate a draft with the following sections. For each section, provide a clear, detailed paragraph of text.
-        1. Overview of the Field
-        2. Key Themes and Findings
-        3. Methodological Approaches
-        4. Comparative Analysis
-        5. Research Gaps and Future Directions
-
-        IMPORTANT: Format your response as a valid JSON object with this exact structure, where each section value is a string:
+        Methodologies: {analysis_result.common_methodologies}
+        Findings: {analysis_result.comparative_findings}
+        Gaps: {analysis_result.research_gaps}
+        
+        Writing Requirements:
+        1. Use formal academic language and proper citations
+        2. Maintain logical flow between sections
+        3. Provide critical analysis, not just description
+        4. Support claims with evidence from the literature
+        5. Highlight methodological strengths and limitations
+        
+        Structure each section with:
+        - Clear topic sentences
+        - Supporting evidence
+        - Critical analysis
+        - Transition sentences
+        
+        IMPORTANT: Format response as JSON:
         {{
             "sections": {{
-                "overview": "text content as a single string",
-                "themes": "text content as a single string",
-                "methods": "text content as a single string",
-                "comparison": "text content as a single string",
-                "gaps": "text content as a single string"
+                "introduction": {{
+                    "content": "text",
+                    "key_points": ["point1", "point2"]
+                }},
+                "methodology_review": {{
+                    "content": "text",
+                    "key_points": ["point1", "point2"]
+                }},
+                "findings_synthesis": {{
+                    "content": "text",
+                    "key_points": ["point1", "point2"]
+                }},
+                "critical_analysis": {{
+                    "content": "text",
+                    "key_points": ["point1", "point2"]
+                }},
+                "future_directions": {{
+                    "content": "text",
+                    "key_points": ["point1", "point2"]
+                }}
             }},
             "metadata": {{
                 "word_count": 0,
-                "section_count": 5
+                "section_count": 5,
+                "citation_count": 0
             }}
         }}
         """
@@ -319,59 +391,54 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
             try:
                 draft_json = json.loads(cleaned_json_str)
                 
-                # Ensure all section values are strings
+                # Get sections and ensure they're properly formatted
                 sections = draft_json.get('sections', {})
-                for key, value in sections.items():
-                    if isinstance(value, dict):
-                        # If value is a dict, convert it to a string
-                        sections[key] = str(value)
-                    elif not isinstance(value, str):
-                        # If value is neither string nor dict, convert to string
-                        sections[key] = str(value)
+                formatted_sections = {}
                 
-                draft_json['sections'] = sections
+                # Extract content from each section, handling both string and dict formats
+                for section_name, section_data in sections.items():
+                    if isinstance(section_data, dict):
+                        formatted_sections[section_name] = section_data.get('content', '')
+                    elif isinstance(section_data, str):
+                        formatted_sections[section_name] = section_data
+                    else:
+                        formatted_sections[section_name] = str(section_data)
                 
             except json.JSONDecodeError as e:
                 logger.error(f"JSON Parse Error in draft generation: {e}")
-                draft_json = {
-                    "sections": {
-                        "overview": f"Literature Review: {research_plan.topic}",
-                        "themes": "Key themes analysis pending.",
-                        "methods": "Methodological analysis pending.",
-                        "comparison": "Comparative analysis pending.",
-                        "gaps": "Research gaps analysis pending."
-                    },
-                    "metadata": {
-                        "word_count": 0,
-                        "section_count": 5
-                    }
+                formatted_sections = {
+                    "introduction": f"Introduction to {research_plan.topic}",
+                    "methodology_review": "Methodology Review",
+                    "findings_synthesis": "Findings Synthesis",
+                    "critical_analysis": "Critical Analysis",
+                    "future_directions": "Future Directions"
                 }
 
-            # Create DraftSection object
+            # Create DraftSection object with the formatted sections
             draft_section = DraftSection(
-                overview=str(draft_json['sections']['overview']),
-                themes=str(draft_json['sections']['themes']),
-                methods=str(draft_json['sections']['methods']),
-                comparison=str(draft_json['sections']['comparison']),
-                gaps=str(draft_json['sections']['gaps'])
+                overview=formatted_sections.get('introduction', ''),
+                themes=formatted_sections.get('methodology_review', ''),
+                methods=formatted_sections.get('findings_synthesis', ''),
+                comparison=formatted_sections.get('critical_analysis', ''),
+                gaps=formatted_sections.get('future_directions', '')
             )
 
             # Count words in each section
-            total_words = sum(count_words(section) 
-                            for section in draft_json['sections'].values())
+            total_words = sum(len(section.split()) for section in formatted_sections.values())
 
             # Create DraftMetadata object
             draft_metadata = DraftMetadata(
                 word_count=total_words,
-                section_count=len(draft_json['sections']),
+                section_count=len(formatted_sections),
                 last_updated=datetime.now().isoformat(),
-                version=1
+                version=1,
+                citation_count=draft_json.get('metadata', {}).get('citation_count', 0)
             )
 
-            # Format the draft in markdown
+            # Format the draft in markdown with the correct section attributes
             formatted_content = f"""# Literature Review: {research_plan.topic}
 
-## Overview of the Field
+## Overview
 {draft_section.overview}
 
 ## Key Themes and Findings
@@ -393,7 +460,7 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
                 formatted_content=formatted_content
             )
 
-            # Store single DraftContent object in state
+            # Store DraftContent object in state
             state["draft_content"] = draft_content
             
             state["messages"] = state.get("messages", []) + [
@@ -406,35 +473,48 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
 
         except Exception as e:
             logger.error(f"Error in draft generation: {e}")
-            # Create fallback DraftContent object
-            fallback_content = f"""# Literature Review: {research_plan.topic}
-
-Draft generation encountered technical difficulties. Please retry the process.
-Key themes identified: {', '.join(analysis_result.key_themes)}
-"""
+            # Update fallback section with correct attributes
             fallback_section = DraftSection(
-                overview="Draft generation failed",
-                themes=f"Identified themes: {', '.join(analysis_result.key_themes)}",
-                methods="Generation error",
-                comparison="Generation error",
-                gaps="Generation error"
+                overview=f"This literature review examines {research_plan.topic}.",
+                themes=', '.join(analysis_result.key_themes),
+                methods=analysis_result.common_methodologies,
+                comparison=analysis_result.comparative_findings,
+                gaps=', '.join(analysis_result.research_gaps)
             )
             
-            fallback_metadata = DraftMetadata(
-                word_count=len(fallback_content.split()),
-                section_count=0,
-                last_updated=datetime.now().isoformat(),
-                version=0
-            )
+            # Update fallback content to match section names
+            fallback_content = f"""# Literature Review: {research_plan.topic}
 
+## Overview
+{fallback_section.overview}
+
+## Key Themes and Findings
+{fallback_section.themes}
+
+## Methodological Approaches
+{fallback_section.methods}
+
+## Comparative Analysis
+{fallback_section.comparison}
+
+## Research Gaps and Future Directions
+{fallback_section.gaps}
+"""
+            # Create DraftContent object
             state["draft_content"] = DraftContent(
                 draft_sections=fallback_section,
-                metadata=fallback_metadata,
+                metadata=DraftMetadata(
+                    word_count=len(fallback_content.split()),
+                    section_count=5,
+                    last_updated=datetime.now().isoformat(),
+                    version=0,
+                    citation_count=0
+                ),
                 formatted_content=fallback_content
             )
 
             state["messages"] = state.get("messages", []) + [
-                AIMessage(content=f"Error in draft generation: {str(e)}")
+                AIMessage(content=f"Error in draft generation: {str(e)}. Created fallback content.")
             ]
 
         return state
@@ -716,6 +796,106 @@ YOUR RESPONSE (JSON only):
     return fact_checking
 
 # -----------------------------------------------------------------------------------------
+# Quality Check Node
+# -----------------------------------------------------------------------------------------
+
+def quality_check_node(llm_interface: LLMInterface):
+    def quality_check(state: WorkflowState) -> WorkflowState:
+        """Node for checking the quality of the draft before fact checking."""
+        draft_content = safe_get(state, "draft_content")
+        if not draft_content:
+            return state
+            
+        prompt = f"""
+        As an academic writing expert, evaluate this draft for quality:
+        
+        {draft_content.formatted_content}
+        
+        Check for:
+        1. Academic language and tone
+        2. Logical flow and coherence
+        3. Depth of analysis
+        4. Evidence support
+        5. Citation usage
+        
+        IMPORTANT: Respond with ONLY a valid JSON object in this exact format:
+        {{
+            "quality_scores": {{
+                "academic_tone": 7,
+                "coherence": 8,
+                "analysis_depth": 6,
+                "evidence_support": 7,
+                "citation_usage": 5
+            }},
+            "improvement_suggestions": [
+                {{"section": "Introduction", "issue": "issue description", "suggestion": "improvement suggestion"}},
+                {{"section": "Methods", "issue": "issue description", "suggestion": "improvement suggestion"}}
+            ],
+            "requires_revision": true
+        }}
+        """
+        
+        try:
+            response = llm_interface.generate_text(prompt)
+            cleaned_json = extract_json(response)
+            quality_check_result = json.loads(cleaned_json)
+            
+            # Validate the quality check result
+            if not isinstance(quality_check_result, dict):
+                raise ValueError("Quality check result must be a dictionary")
+                
+            # Ensure required fields exist
+            quality_check_result.setdefault("quality_scores", {
+                "academic_tone": 5,
+                "coherence": 5,
+                "analysis_depth": 5,
+                "evidence_support": 5,
+                "citation_usage": 5
+            })
+            quality_check_result.setdefault("improvement_suggestions", [])
+            quality_check_result.setdefault("requires_revision", True)
+            
+            # Update state with quality check results
+            state["quality_check"] = quality_check_result
+            
+            # Add quality check message
+            message = (
+                f"Quality Check Results:\n"
+                f"Academic Tone: {quality_check_result['quality_scores']['academic_tone']}/10\n"
+                f"Coherence: {quality_check_result['quality_scores']['coherence']}/10\n"
+                f"Analysis Depth: {quality_check_result['quality_scores']['analysis_depth']}/10\n"
+                f"Evidence Support: {quality_check_result['quality_scores']['evidence_support']}/10\n"
+                f"Citation Usage: {quality_check_result['quality_scores']['citation_usage']}/10\n"
+                f"\nRequires Revision: {quality_check_result['requires_revision']}"
+            )
+            
+            state["messages"].append(AIMessage(content=message))
+                
+        except Exception as e:
+            logger.error(f"Error in quality check: {e}")
+            # Provide default quality check result
+            state["quality_check"] = {
+                "quality_scores": {
+                    "academic_tone": 5,
+                    "coherence": 5,
+                    "analysis_depth": 5,
+                    "evidence_support": 5,
+                    "citation_usage": 5
+                },
+                "improvement_suggestions": [
+                    {"section": "General", "issue": "Quality check failed", "suggestion": "Please review manually"}
+                ],
+                "requires_revision": True
+            }
+            state["messages"].append(
+                AIMessage(content=f"Error in quality check: {str(e)}. Using default values.")
+            )
+            
+        return state
+        
+    return quality_check
+
+# -----------------------------------------------------------------------------------------
 # Workflow Creation
 # -----------------------------------------------------------------------------------------
 
@@ -753,6 +933,7 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
     builder.add_node("data_collection", data_collection_node(config, db_interface, document_processor))
     builder.add_node("analysis", lambda x: analysis_node(x, db_interface, llm_interface))
     builder.add_node("draft_generation", draft_generation_node(llm_interface))
+    builder.add_node("quality_check", quality_check_node(llm_interface))
     builder.add_node("fact_checking", fact_checking_node(db_interface, llm_interface)) # Pass llm_interface to fact_checking_node
 
     # Add edges with validation
@@ -760,7 +941,8 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
     builder.add_edge("research_planning", "data_collection")
     builder.add_edge("data_collection", "analysis")
     builder.add_edge("analysis", "draft_generation")
-    builder.add_edge("draft_generation", "fact_checking")
+    builder.add_edge("draft_generation", "quality_check")
+    builder.add_edge("quality_check", "fact_checking")
     builder.add_edge("fact_checking", END)
 
     builder.set_entry_point("state_validation")
