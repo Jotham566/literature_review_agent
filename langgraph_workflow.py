@@ -13,7 +13,7 @@ import json
 import argparse
 import yaml
 from datetime import datetime
-
+import nltk
 # -----------------------------------------------------------------------------------------
 # Research Planning Node
 # -----------------------------------------------------------------------------------------
@@ -287,21 +287,21 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
         Comparative Findings: {analysis_result.comparative_findings}
         Research Gaps: {analysis_result.research_gaps}
 
-        Generate a draft in markdown format with the following structure:
+        Generate a draft with the following sections. For each section, provide a clear, detailed paragraph of text.
         1. Overview of the Field
         2. Key Themes and Findings
         3. Methodological Approaches
         4. Comparative Analysis
         5. Research Gaps and Future Directions
 
-        IMPORTANT: Format your response as a valid JSON object with this exact structure:
+        IMPORTANT: Format your response as a valid JSON object with this exact structure, where each section value is a string:
         {{
             "sections": {{
-                "overview": "text here",
-                "themes": "text here",
-                "methods": "text here",
-                "comparison": "text here",
-                "gaps": "text here"
+                "overview": "text content as a single string",
+                "themes": "text content as a single string",
+                "methods": "text content as a single string",
+                "comparison": "text content as a single string",
+                "gaps": "text content as a single string"
             }},
             "metadata": {{
                 "word_count": 0,
@@ -318,6 +318,19 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
             cleaned_json_str = extract_json(response_json_str)
             try:
                 draft_json = json.loads(cleaned_json_str)
+                
+                # Ensure all section values are strings
+                sections = draft_json.get('sections', {})
+                for key, value in sections.items():
+                    if isinstance(value, dict):
+                        # If value is a dict, convert it to a string
+                        sections[key] = str(value)
+                    elif not isinstance(value, str):
+                        # If value is neither string nor dict, convert to string
+                        sections[key] = str(value)
+                
+                draft_json['sections'] = sections
+                
             except json.JSONDecodeError as e:
                 logger.error(f"JSON Parse Error in draft generation: {e}")
                 draft_json = {
@@ -336,11 +349,11 @@ def draft_generation_node(llm_interface: LLMInterface) -> callable:
 
             # Create DraftSection object
             draft_section = DraftSection(
-                overview=draft_json['sections']['overview'],
-                themes=draft_json['sections']['themes'],
-                methods=draft_json['sections']['methods'],
-                comparison=draft_json['sections']['comparison'],
-                gaps=draft_json['sections']['gaps']
+                overview=str(draft_json['sections']['overview']),
+                themes=str(draft_json['sections']['themes']),
+                methods=str(draft_json['sections']['methods']),
+                comparison=str(draft_json['sections']['comparison']),
+                gaps=str(draft_json['sections']['gaps'])
             )
 
             # Count words in each section
@@ -429,6 +442,77 @@ Key themes identified: {', '.join(analysis_result.key_themes)}
     return draft_generation
 
 # -----------------------------------------------------------------------------------------
+# Fact Checking Node - UPDATED NODE (Version 2)
+# -----------------------------------------------------------------------------------------
+
+def fact_checking_node(db_interface: VectorDBInterface): # Pass db_interface
+    def fact_checking(state: WorkflowState) -> WorkflowState:
+        """Node for fact-checking the draft content (Version 2 - NLTK, improved placeholder status)."""
+        draft_content: DraftContent = safe_get(state, "draft_content")
+        if not draft_content or not draft_content.formatted_content:
+            logger.warning("No draft content available for fact-checking.")
+            return state
+
+        logger.info("Starting Fact Checking Node (Version 2 - NLTK, improved placeholder status)...")
+        markdown_draft = draft_content.formatted_content # Get Markdown draft
+
+        # --- Claim Extraction (using NLTK sentence tokenizer) ---
+        tokenizer = nltk.tokenize.sent_tokenize
+        claims = tokenizer(markdown_draft) # Use NLTK sentence tokenizer
+        logger.info(f"Extracted {len(claims)} claims for fact-checking (using NLTK).")
+
+        # --- Source Retrieval and Verification (Placeholder - Improved status) ---
+        verified_claims_count = 0
+        needs_review_claims_count = 0
+        unverified_claims_count = 0 # Added unverified count
+        contradicted_claims_count = 0 # (Not used in this version, but can be added later)
+
+        annotated_draft = "" # Initialize empty annotated draft
+
+        for i, claim in enumerate(claims):
+            if not claim.strip(): # Skip empty claims
+                annotated_draft += claim + "\n" # Keep empty lines
+                continue
+
+            logger.debug(f"Fact-checking claim {i+1}: '{claim[:100]}...'") # Log first 100 chars
+
+            # --- Source Retrieval ---
+            query = claim # Use claim as query for retrieval (improve query formulation later)
+            relevant_chunks: List[DocumentChunk] = db_interface.search_similarity(query=query, top_k=3) # Retrieve top 3
+
+            if relevant_chunks:
+                logger.debug(f"Retrieved {len(relevant_chunks)} chunks for claim {i+1}.")
+                verification_status = "potentially supported - needs review" # Improved placeholder status
+                needs_review_claims_count += 1 # Still counts as needs review for now
+            else:
+                logger.warning(f"No relevant sources found for claim {i+1}: '{claim[:100]}...'")
+                verification_status = "unverified - needs review" # More informative unverified status
+                unverified_claims_count += 1 # Count as unverified
+
+            # --- Annotation (Bold text annotation) ---
+            annotation_prefix = f"**[{verification_status.title()}]**: " # Bold text annotation
+            annotated_claim = f"{annotation_prefix}{claim}"
+            annotated_draft += annotated_claim + "\n\n" # Add claim and annotation, with double newline
+
+
+        logger.info("Fact Checking Node (Version 2) completed.")
+        # --- Update state ---
+        draft_content.formatted_content = annotated_draft # Update draft with annotations
+
+        quality_report: QualityMetricsReport = state.get("quality_report") or QualityMetricsReport() # Get or create QualityMetricsReport
+        total_claims = len(claims) - annotated_draft.count("<!--") # Exclude comment lines from claim count (if any comments added later)
+        if total_claims > 0:
+            quality_report.claim_verification_percentage = (verified_claims_count / total_claims * 100) # Example metric (still based on 'verified' count which is 0 now)
+        else:
+            quality_report.claim_verification_percentage = 0.0
+
+        state["quality_report"] = quality_report # Update quality report in state
+
+        return state
+
+    return fact_checking
+
+# -----------------------------------------------------------------------------------------
 # Workflow Creation
 # -----------------------------------------------------------------------------------------
 
@@ -436,8 +520,8 @@ Key themes identified: {', '.join(analysis_result.key_themes)}
 def create_research_agent_workflow(config: Config, llm_interface: LLMInterface, 
                                  db_interface: VectorDBInterface, 
                                  document_processor: MemoryEfficientDocumentProcessor) -> StateGraph:
-    """Creates the LangGraph workflow with improved error handling and state management."""
-    logger.info("Creating Research Agent LangGraph Workflow...")
+    """Creates the LangGraph workflow including Fact Checking Node."""
+    logger.info("Creating Research Agent LangGraph Workflow (with Fact Checking Node)...")
     
     builder = StateGraph(Dict)
 
@@ -466,19 +550,21 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
     builder.add_node("data_collection", data_collection_node(config, db_interface, document_processor))
     builder.add_node("analysis", lambda x: analysis_node(x, db_interface, llm_interface))
     builder.add_node("draft_generation", draft_generation_node(llm_interface))
+    builder.add_node("fact_checking", fact_checking_node(db_interface))
 
     # Add edges with validation
     builder.add_edge("state_validation", "research_planning")
     builder.add_edge("research_planning", "data_collection")
     builder.add_edge("data_collection", "analysis")
     builder.add_edge("analysis", "draft_generation")
-    builder.add_edge("draft_generation", END)
+    builder.add_edge("draft_generation", "fact_checking")
+    builder.add_edge("fact_checking", END)
 
     builder.set_entry_point("state_validation")
 
     try:
         graph = builder.compile()
-        logger.info("Research Agent LangGraph Workflow created successfully.")
+        logger.info("Research Agent LangGraph Workflow (with Fact Checking Node) created.")
         return graph
     except Exception as e:
         logger.error(f"Error building workflow graph: {e}")
@@ -490,7 +576,7 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
 
 @time_it
 def run_research_agent(topic: str, model_name: str = None):
-    """Main function to run the research agent workflow."""
+    """Main function to run the research agent workflow (prints Fact-Checked Draft)"""
     logger.info(f"Starting Research Agent for topic: '{topic}'")
 
     config = load_config()
@@ -513,13 +599,14 @@ def run_research_agent(topic: str, model_name: str = None):
         "document_chunks": [],
         "quality_report": QualityMetricsReport(),
         "analysis_result": None,
+        "draft_metadata": {},
         "messages": []
     }
 
     try:
-        logger.info("Executing LangGraph workflow...")
+        logger.info("Executing LangGraph workflow (with Fact Checking Node)...")
         results = workflow.invoke(initial_state)
-        logger.info("LangGraph workflow execution completed.")
+        logger.info("LangGraph workflow execution completed (with Fact Checking Node).")
 
         if results.get("research_plan"):
             logger.info("\n--- Final Research Plan ---")
@@ -534,17 +621,22 @@ def run_research_agent(topic: str, model_name: str = None):
             logger.info(f"Research Gaps: {results['analysis_result'].research_gaps}")
 
         if results.get("draft_content"):
-            logger.info("\n--- Generated Draft ---")
-            print(results["draft_content"].formatted_content)
+            logger.info("\n--- Fact-Checked Draft ---") # Updated section title
+            print(results["draft_content"].formatted_content) # Print annotated draft
             logger.info(f"Draft Statistics: Word Count: {results['draft_content'].metadata.word_count}")
         else:
             logger.warning("Draft content not found in final state.")
+
+        if results.get("quality_report"): # Print quality metrics
+            logger.info("\n--- Quality Metrics ---")
+            logger.info(f"Claim Verification Percentage: {results['quality_report'].claim_verification_percentage:.2f}%")
+
 
         logger.info(f"Total Document Chunks in VectorDB: {db_interface.get_collection_size()}")
         logger.info(f"Total Words in Generated Draft: {results.get('draft_content').metadata.word_count if results.get('draft_content') else 0}")
 
     except Exception as e:
-        logger.error(f"Error running LangGraph workflow: {e}")
+        logger.error(f"Error running LangGraph workflow (with Fact Checking Node): {e}")
 
 if __name__ == "__main__":
     # Add command line argument parsing
