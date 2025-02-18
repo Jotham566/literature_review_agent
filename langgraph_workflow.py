@@ -36,11 +36,8 @@ def research_planning_node(llm_interface: LLMInterface):
         1. Define Research Scope: Briefly outline the key aspects and boundaries of this literature review.
         2. Identify Key Search Terms: Generate 5-7 highly relevant search terms for academic databases.
 
-        IMPORTANT: Respond ONLY with a valid JSON object in the following format, with no additional text before or after:
-        {{
-          "research_scope": "This review will focus on...",
-          "search_terms": ["term1", "term2", ...]
-        }}
+        IMPORTANT: Respond with ONLY a valid JSON object in this exact format, with no additional text or formatting:
+        {{"research_scope": "scope text here", "search_terms": ["term1", "term2", "term3"]}}
         """
 
         try:
@@ -49,13 +46,16 @@ def research_planning_node(llm_interface: LLMInterface):
 
             # Clean up the response to extract just the JSON part
             cleaned_json_str = extract_json(response_json_str)
+            if not cleaned_json_str.endswith("}"):
+                cleaned_json_str += "}"  # Ensure JSON is properly closed
+            
             try:
                 response_json = json.loads(cleaned_json_str)
             except json.JSONDecodeError as e:
                 logger.error(f"JSON Parse Error: {e}. Raw response: '{response_json_str}'")
                 # Provide default values if parsing fails
                 response_json = {
-                    "research_scope": "Default scope for " + topic,
+                    "research_scope": f"Default scope for {topic}",
                     "search_terms": [topic.lower()]
                 }
 
@@ -442,18 +442,80 @@ Key themes identified: {', '.join(analysis_result.key_themes)}
     return draft_generation
 
 # -----------------------------------------------------------------------------------------
-# Fact Checking Node - UPDATED NODE (Version 2)
+# Fact Checking Node - UPDATED NODE (Version 3 - LLM Verification)
 # -----------------------------------------------------------------------------------------
 
-def fact_checking_node(db_interface: VectorDBInterface): # Pass db_interface
+def extract_json_from_llm_response(response: str) -> dict:
+    """Extract JSON from LLM response, handling various response formats."""
+    try:
+        # First try direct JSON parsing
+        return json.loads(response)
+    except json.JSONDecodeError:
+        # Try to find JSON-like structure in the response
+        import re
+        
+        # More robust JSON pattern without recursive matching
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.finditer(json_pattern, response, re.DOTALL)
+        
+        # Try each potential JSON match
+        for match in matches:
+            try:
+                json_str = match.group()
+                # Clean up common formatting issues
+                json_str = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_str)
+                json_str = re.sub(r':\s*"([^"]*)"(\s*[,}])', r':"\1"\2', json_str)
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                continue
+        
+        # If no valid JSON found, try extracting components with more flexible patterns
+        status_pattern = r'(?:"?verification_status"?|status)\s*:\s*"?([^",}\s]+)"?'
+        confidence_pattern = r'(?:"?confidence_score"?|confidence)\s*:\s*([\d.]+)'
+        reason_pattern = r'(?:"?reason"?|explanation)\s*:\s*"([^"]+)"'
+        
+        status_match = re.search(status_pattern, response, re.IGNORECASE)
+        confidence_match = re.search(confidence_pattern, response, re.IGNORECASE)
+        reason_match = re.search(reason_pattern, response, re.IGNORECASE)
+        
+        if status_match or confidence_match or reason_match:
+            return {
+                "verification_status": status_match.group(1) if status_match else "needs review",
+                "confidence_score": float(confidence_match.group(1)) if confidence_match else 0.5,
+                "reason": reason_match.group(1) if reason_match else "No explicit reason provided"
+            }
+        
+        # If all else fails, analyze the response text for verification indicators
+        response_lower = response.lower()
+        if any(word in response_lower for word in ["verified", "supported", "confirms"]):
+            return {
+                "verification_status": "verified",
+                "confidence_score": 0.8,
+                "reason": "Implicit verification found in response"
+            }
+        elif any(word in response_lower for word in ["contradicted", "conflicts", "disagrees"]):
+            return {
+                "verification_status": "contradicted",
+                "confidence_score": 0.8,
+                "reason": "Implicit contradiction found in response"
+            }
+        
+        # Default fallback
+        return {
+            "verification_status": "needs review",
+            "confidence_score": 0.5,
+            "reason": f"Unable to parse verification details from response: {response[:100]}..."
+        }
+
+def fact_checking_node(db_interface: VectorDBInterface, llm_interface: LLMInterface):
     def fact_checking(state: WorkflowState) -> WorkflowState:
-        """Node for fact-checking the draft content (Version 2 - NLTK, improved placeholder status)."""
+        """Node for fact-checking the draft content with improved verification."""
         draft_content: DraftContent = safe_get(state, "draft_content")
         if not draft_content or not draft_content.formatted_content:
             logger.warning("No draft content available for fact-checking.")
             return state
 
-        logger.info("Starting Fact Checking Node (Version 2 - NLTK, improved placeholder status)...")
+        logger.info("Starting Fact Checking Node (Version 3 - LLM Verification)...")
         markdown_draft = draft_content.formatted_content # Get Markdown draft
 
         # --- Claim Extraction (using NLTK sentence tokenizer) ---
@@ -461,11 +523,14 @@ def fact_checking_node(db_interface: VectorDBInterface): # Pass db_interface
         claims = tokenizer(markdown_draft) # Use NLTK sentence tokenizer
         logger.info(f"Extracted {len(claims)} claims for fact-checking (using NLTK).")
 
-        # --- Source Retrieval and Verification (Placeholder - Improved status) ---
+        # --- Source Retrieval and Verification (LLM-based Verification) ---
         verified_claims_count = 0
         needs_review_claims_count = 0
-        unverified_claims_count = 0 # Added unverified count
-        contradicted_claims_count = 0 # (Not used in this version, but can be added later)
+        unverified_claims_count = 0
+        contradicted_claims_count = 0
+        total_confidence_score = 0.0 # Track total confidence score
+
+        verification_results = []
 
         annotated_draft = "" # Initialize empty annotated draft
 
@@ -480,33 +545,171 @@ def fact_checking_node(db_interface: VectorDBInterface): # Pass db_interface
             query = claim # Use claim as query for retrieval (improve query formulation later)
             relevant_chunks: List[DocumentChunk] = db_interface.search_similarity(query=query, top_k=3) # Retrieve top 3
 
+            verification_status = "needs review" # Default status if verification fails
+            confidence_score = 0.5 # Default confidence
+            reason = "Initial assessment pending LLM verification." # Default reason
+
             if relevant_chunks:
                 logger.debug(f"Retrieved {len(relevant_chunks)} chunks for claim {i+1}.")
-                verification_status = "potentially supported - needs review" # Improved placeholder status
-                needs_review_claims_count += 1 # Still counts as needs review for now
-            else:
+
+                # --- LLM-Based Verification Prompt ---
+                source_excerpts = "\n".join([f"--- Source {j+1} from: {chk.metadata.source_document_title} ---\n{chk.content}" for j, chk in enumerate(relevant_chunks)])
+                verification_prompt = f"""
+You are an expert fact-checker tasked with verifying claims against source documents.
+
+CLAIM TO VERIFY:
+"{claim}"
+
+SOURCE DOCUMENT EXCERPTS:
+{source_excerpts}
+
+VERIFICATION RULES:
+1. "verified" status requires:
+   - Direct evidence from sources that explicitly supports the claim
+   - Confidence > 0.8 only if evidence is clear and unambiguous
+   - Must cite specific evidence in reason
+
+2. "contradicted" status requires:
+   - Direct evidence that explicitly conflicts with the claim
+   - Must quote the contradicting evidence in reason
+   - Assign confidence based on strength of contradiction
+
+3. "needs review" status applies when:
+   - Evidence is indirect or partially supporting
+   - Sources are relevant but not conclusive
+   - Insufficient evidence to verify or contradict
+   - Multiple conflicting pieces of evidence
+
+RESPONSE REQUIREMENTS:
+1. Respond ONLY with a valid JSON object
+2. Include specific quotes or evidence in reason
+3. Confidence score must reflect evidence strength
+4. Default to "needs review" if uncertain
+
+EXAMPLE RESPONSES:
+
+For Strong Evidence:
+{{
+    "verification_status": "verified",
+    "confidence_score": 0.9,
+    "reason": "Source directly states: '[exact quote supporting claim]'"
+}}
+
+For Contradictory Evidence:
+{{
+    "verification_status": "contradicted",
+    "confidence_score": 0.85,
+    "reason": "Source contradicts claim with: '[exact quote that conflicts]'"
+}}
+
+For Unclear Evidence:
+{{
+    "verification_status": "needs review",
+    "confidence_score": 0.5,
+    "reason": "Sources discuss [topic] but don't directly address [specific claim aspect]"
+}}
+
+YOUR RESPONSE (JSON only):
+"""
+
+                try:
+                    llm_response_str = llm_interface.generate_text(verification_prompt)
+                    logger.debug(f"LLM Verification Response (Raw):\n{llm_response_str}")
+                    
+                    # Use new extract_json_from_llm_response function
+                    llm_response_json = extract_json_from_llm_response(llm_response_str)
+                    
+                    verification_status = safe_get(llm_response_json, "verification_status", "needs review")
+                    confidence_score = float(safe_get(llm_response_json, "confidence_score", 0.5))
+                    reason = safe_get(llm_response_json, "reason", "Verification assessment by LLM.")
+                    
+                    # Track verification statistics
+                    total_confidence_score += confidence_score
+                    
+                    if verification_status == "verified":
+                        verified_claims_count += 1
+                    elif verification_status == "contradicted":
+                        contradicted_claims_count += 1
+                    else:  # "needs review" or any other status
+                        needs_review_claims_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error during LLM-based verification: {e}")
+                    verification_status = "needs review"
+                    confidence_score = 0.5
+                    reason = f"Error during verification: {str(e)}"
+                    needs_review_claims_count += 1
+
+            else: # No relevant chunks found
                 logger.warning(f"No relevant sources found for claim {i+1}: '{claim[:100]}...'")
-                verification_status = "unverified - needs review" # More informative unverified status
-                unverified_claims_count += 1 # Count as unverified
+                verification_status = "unverified - needs review"
+                unverified_claims_count += 1
+                reason = "No relevant sources found for verification."
 
-            # --- Annotation (Bold text annotation) ---
+            # Create verification stats dictionary for each claim
+            verification_stats = {
+                "claim_index": i,
+                "claim_text": claim,
+                "verification_status": verification_status,
+                "confidence_score": confidence_score,
+                "reason": reason,
+                "has_sources": bool(relevant_chunks),
+                "source_count": len(relevant_chunks) if relevant_chunks else 0
+            }
+
+            # Track all verification results
+            verification_results.append(verification_stats)
+
+            # --- Annotation (Bold text annotation with status and reason in comment) ---
             annotation_prefix = f"**[{verification_status.title()}]**: " # Bold text annotation
-            annotated_claim = f"{annotation_prefix}{claim}"
-            annotated_draft += annotated_claim + "\n\n" # Add claim and annotation, with double newline
+            annotation_comment = f"<!-- Verification Status: {verification_status} | Confidence: {confidence_score:.2f} | Reason: {reason} -->" # Detailed comment
+            annotated_claim = f"{annotation_prefix}{claim} {annotation_comment}" # Combine claim, annotation, and comment
+            annotated_draft += annotated_claim + "\n\n" # Add claim, annotation, and comment, with double newline
 
 
-        logger.info("Fact Checking Node (Version 2) completed.")
+        logger.info("Fact Checking Node (Version 3 - LLM Verification) completed.")
         # --- Update state ---
         draft_content.formatted_content = annotated_draft # Update draft with annotations
 
-        quality_report: QualityMetricsReport = state.get("quality_report") or QualityMetricsReport() # Get or create QualityMetricsReport
-        total_claims = len(claims) - annotated_draft.count("<!--") # Exclude comment lines from claim count (if any comments added later)
+        quality_report: QualityMetricsReport = state.get("quality_report") or QualityMetricsReport()
+        
+        # Calculate verification statistics
+        total_claims = len([c for c in claims if c.strip()])  # Count only non-empty claims
         if total_claims > 0:
-            quality_report.claim_verification_percentage = (verified_claims_count / total_claims * 100) # Example metric (still based on 'verified' count which is 0 now)
-        else:
-            quality_report.claim_verification_percentage = 0.0
+            # Count verified claims with high confidence
+            verified_high_confidence = len([
+                v for v in verification_results 
+                if v["verification_status"].lower() == "verified" 
+                and v["confidence_score"] > 0.8
+            ])
+            
+            # Calculate percentage based on verified high-confidence claims
+            quality_report.claim_verification_percentage = (verified_high_confidence / total_claims * 100)
+            
+            # Add detailed verification metrics
+            quality_report.metrics_passed.update({
+                "fact_checking_verified_claims": verified_claims_count > 0,
+                "fact_checking_high_confidence": verified_high_confidence / total_claims > 0.5,
+                "has_contradictions": contradicted_claims_count > 0,
+                "needs_review": needs_review_claims_count > 0
+            })
+            
+            # Add comprehensive verification report with more detail
+            quality_report.hallucination_report = [
+                f"Verification Summary:",
+                f"- Total Claims: {total_claims}",
+                f"- Verified (High Confidence): {verified_high_confidence} ({quality_report.claim_verification_percentage:.1f}%)",
+                f"- Verified (Any Confidence): {verified_claims_count} ({(verified_claims_count/total_claims*100):.1f}%)",
+                f"- Contradicted: {contradicted_claims_count} ({(contradicted_claims_count/total_claims*100):.1f}%)",
+                f"- Needs Review: {needs_review_claims_count} ({(needs_review_claims_count/total_claims*100):.1f}%)",
+                f"- Average Confidence: {total_confidence_score/total_claims:.2f}",
+                "\nDetailed Verification Results:",
+                *[f"Claim {v['claim_index']+1}: {v['verification_status'].title()} "
+                  f"(Confidence: {v['confidence_score']:.2f})"
+                  for v in verification_results]
+            ]
 
-        state["quality_report"] = quality_report # Update quality report in state
+        state["quality_report"] = quality_report
 
         return state
 
@@ -517,12 +720,12 @@ def fact_checking_node(db_interface: VectorDBInterface): # Pass db_interface
 # -----------------------------------------------------------------------------------------
 
 @time_it
-def create_research_agent_workflow(config: Config, llm_interface: LLMInterface, 
-                                 db_interface: VectorDBInterface, 
+def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
+                                 db_interface: VectorDBInterface,
                                  document_processor: MemoryEfficientDocumentProcessor) -> StateGraph:
-    """Creates the LangGraph workflow including Fact Checking Node."""
-    logger.info("Creating Research Agent LangGraph Workflow (with Fact Checking Node)...")
-    
+    """Creates the LangGraph workflow including Fact Checking Node (Version 3)."""
+    logger.info("Creating Research Agent LangGraph Workflow (with Fact Checking Node - Version 3)...")
+
     builder = StateGraph(Dict)
 
     # Add state validation
@@ -550,7 +753,7 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
     builder.add_node("data_collection", data_collection_node(config, db_interface, document_processor))
     builder.add_node("analysis", lambda x: analysis_node(x, db_interface, llm_interface))
     builder.add_node("draft_generation", draft_generation_node(llm_interface))
-    builder.add_node("fact_checking", fact_checking_node(db_interface))
+    builder.add_node("fact_checking", fact_checking_node(db_interface, llm_interface)) # Pass llm_interface to fact_checking_node
 
     # Add edges with validation
     builder.add_edge("state_validation", "research_planning")
@@ -564,7 +767,7 @@ def create_research_agent_workflow(config: Config, llm_interface: LLMInterface,
 
     try:
         graph = builder.compile()
-        logger.info("Research Agent LangGraph Workflow (with Fact Checking Node) created.")
+        logger.info("Research Agent LangGraph Workflow (with Fact Checking Node - Version 3) created.")
         return graph
     except Exception as e:
         logger.error(f"Error building workflow graph: {e}")

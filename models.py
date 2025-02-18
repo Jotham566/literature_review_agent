@@ -59,6 +59,9 @@ class QualityMetricsReport(BaseModel):
     hallucination_report: List[str] = Field(default_factory=list)
     overall_quality_score: float = 0.0
     metrics_passed: Dict[str, bool] = Field(default_factory=dict)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    verification_metrics: Dict[str, Any] = Field(default_factory=dict)
+    verification_report: Dict[str, str] = Field(default_factory=dict)
 
 class AnalysisResult(BaseModel):
     key_themes: List[str] = Field(default_factory=list)
