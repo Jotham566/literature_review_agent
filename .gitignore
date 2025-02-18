@@ -206,3 +206,4 @@ chroma/**/*
 *.sqlite3
 *.binarxiv_papers/
 chroma/
+.DS_Store
